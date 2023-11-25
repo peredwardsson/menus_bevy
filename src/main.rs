@@ -225,8 +225,10 @@ mod game {
                 debug_cmds.run_if(in_state(GameState::Game)),
                 animate_sprite,
                 update_player_movement,
+                update_player_sprite_facing,
             ))
             .add_event::<DebugCmdEvent>()
+            .add_event::<ChangePlayerFacing>()
             .insert_resource(PlayerMovement::default())
             .insert_resource(PlayerSpeed(600.0))
             ;
@@ -241,6 +243,9 @@ mod game {
 
     #[derive(Event, Default, Deref, DerefMut)]
     struct DebugCmdEvent(DebugCommands);
+
+    #[derive(Event, Deref, DerefMut)]
+    struct ChangePlayerFacing(Direction);
 
     #[derive(Component)]
     struct AnimationIdc {
@@ -287,7 +292,7 @@ mod game {
         for (idc, mut timer,  mut sprite) in &mut animatable_sprites {
             timer.tick(time.delta());
             if timer.just_finished() {
-                sprite.index = if sprite.index == idc.last {
+                sprite.index = if sprite.index >= idc.last {
                     idc.first
                 } else {
                     sprite.index + 1
@@ -336,6 +341,7 @@ mod game {
         inputs: Res<Input<KeyCode>>,
         mut spawn_player_event: EventWriter<DebugCmdEvent>,
         mut player_movement: ResMut<PlayerMovement>,
+        mut player_facing_evw: EventWriter<ChangePlayerFacing>,
     ) {
 
         if inputs.just_pressed(KeyCode::Escape) {
@@ -348,21 +354,25 @@ mod game {
         if inputs.just_pressed(KeyCode::W) {
             // move up
             **player_movement = Direction::Up;
+            player_facing_evw.send(ChangePlayerFacing(Direction::Up));
         }
 
         if inputs.just_pressed(KeyCode::A) {
             // move left
             **player_movement = Direction::Left;
+            player_facing_evw.send(ChangePlayerFacing(Direction::Left))
         }
 
         if inputs.just_pressed(KeyCode::S) {
             // move down
             **player_movement = Direction::Down;
+            player_facing_evw.send(ChangePlayerFacing(Direction::Down))
         }
 
         if inputs.just_pressed(KeyCode::D) {
             // move right
             **player_movement = Direction::Right;
+            player_facing_evw.send(ChangePlayerFacing(Direction::Right))
         }
 
         if inputs.any_pressed([KeyCode::W, KeyCode::A, KeyCode::S, KeyCode::D]) {
@@ -391,6 +401,22 @@ mod game {
                 Direction::Right => player.translation.x += speed,
                 Direction::Up => player.translation.y += speed,
             };
+        }
+    }
+
+    fn update_player_sprite_facing(
+        mut players: Query<(&mut AnimationIdc, &mut TextureAtlasSprite), With<PlayerPawn>>,
+        // mut player_movement: ResMut<PlayerMovement>,
+        mut player_facing_evr: EventReader<ChangePlayerFacing>,
+    ) {
+        for evt in player_facing_evr.iter() {
+            let Ok((mut idc, mut sprite)) = players.get_single_mut() else {return;};
+            match **evt {
+                Direction::Down => {idc.first = 0; idc.last = 11; sprite.index = idc.first},
+                Direction::Up => {idc.first = 12; idc.last = 23; sprite.index = idc.first},
+                Direction::Right => {idc.first = 24; idc.last = 35; sprite.index = idc.first},
+                Direction::Left => {idc.first = 36; idc.last = 47; sprite.index = idc.first},
+            }
         }
     }
 }
