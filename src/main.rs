@@ -1,5 +1,6 @@
 use bevy::prelude::*;
 
+
 fn main() {
     App::new()
         .add_plugins(DefaultPlugins.set(
@@ -21,71 +22,35 @@ fn despawn_recursive<T: Component>(to_despawn: Query<Entity, With<T>>, mut comma
 
 mod manager {
     use bevy::prelude::*;
+    use bevy_asset_loader::prelude::*;
 
     pub struct Mgr;
 
     #[derive(Component)]
     pub struct Manager;
 
-    #[derive(Resource, Default)]
-    struct AssetLoading(pub Vec<HandleUntyped>);
+    #[derive(AssetCollection, Resource)]
+    pub struct SpritesheetAssets {
+        #[asset(texture_atlas(tile_size_x = 24., tile_size_y = 24., columns = 12, rows = 4))]
+        #[asset(path = "main_character_ss.png")]
+        pub main_char: Handle<TextureAtlas>,
+        #[asset(texture_atlas(tile_size_x = 128., tile_size_y = 128., columns = 13, rows = 8))]
+        #[asset(path = "sokoban.png")]
+        pub sokoban: Handle<TextureAtlas>,
+    }
 
     impl Plugin for Mgr {
         fn build(&self, app: &mut App) {
             app.add_state::<GameState>()
-                .insert_resource(AssetLoading::default())
-                .add_systems(OnEnter(GameState::Loading), load_assets)
-                .add_systems(
-                    Update,
-                    check_if_assets_loaded.run_if(in_state(GameState::Loading)),
-                );
+                .add_loading_state(
+                    LoadingState::new(GameState::Loading).continue_to_state(GameState::Menu)
+                )
+                .add_collection_to_loading_state::<_, SpritesheetAssets>(GameState::Loading)
+                ;
         }
     }
-    #[derive(Resource, Deref, DerefMut)]
-    struct FauxLoadingTimer(Timer);
 
 
-    fn load_assets(
-        // mut commands: Commands,
-        asset_server: Res<AssetServer>,
-        mut loading: ResMut<AssetLoading>,
-        mut texture_atlases: ResMut<Assets<TextureAtlas>>,
-    ) {
-        let texture_handle: Handle<Image> = asset_server.load("main_character_ss.png");
-        loading.0.push(texture_handle.clone_untyped());
-
-        // maybe should be moved elsewhere
-        let texture_atlas = TextureAtlas::from_grid(
-            texture_handle, Vec2::new(16.0, 16.0),
-             12, 4, None, None
-        );
-        texture_atlases.add(texture_atlas);
-    }
-
-    fn check_if_assets_loaded(
-        // mut commands: Commands,
-        // time: Res<Time>,
-        // mut timer: ResMut<FauxLoadingTimer>,
-        mut gamestate: ResMut<NextState<GameState>>,
-        loading: Res<AssetLoading>,
-        server: Res<AssetServer>,
-    ) {
-        use bevy::asset::LoadState;
-
-        match server.get_group_load_state(loading.0.iter().map(|h| h.id())) {
-            LoadState::Failed => {
-                // something failed
-                println!("Something did not load!! :(");
-            },
-            LoadState::Loaded => {
-                gamestate.set(GameState::Menu);
-            },
-            _ => {}
-        }
-        // if timer.tick(time.delta()).finished() {
-        //     gamestate.set(GameState::Menu);
-        // }
-    }
     #[derive(Component, Default, States, Debug, Hash, PartialEq, Eq, Clone)]
     pub enum GameState {
         #[default]
@@ -214,6 +179,8 @@ mod menu {
 }
 
 mod game {
+    use crate::manager::SpritesheetAssets;
+
     use super::manager::GameState;
     use bevy::prelude::*;
     pub struct Game;
@@ -230,10 +197,24 @@ mod game {
             .add_event::<DebugCmdEvent>()
             .add_event::<ChangePlayerFacing>()
             .insert_resource(PlayerMovement::default())
-            .insert_resource(PlayerSpeed(600.0))
+            .insert_resource(PlayerSpeed(300.0))
             ;
         }
     }
+
+    struct AnimationIndices {
+        north: [usize; 2],
+        west: [usize; 2],
+        east: [usize; 2],
+        south: [usize; 2],
+    }
+
+    const ANIMATION_INDICES: AnimationIndices = AnimationIndices {
+        south: [53, 54],
+        north: [56, 57],
+        west: [79, 80],
+        east: [82, 83],
+    };
 
     #[derive(Default)]
     enum DebugCommands {
@@ -303,31 +284,29 @@ mod game {
 
     fn debug_cmds(
         mut commands: Commands,
-        server: Res<AssetServer>,
-        mut atlases: ResMut<Assets<TextureAtlas>>,
         mut ev_spawn: EventReader<DebugCmdEvent>,
+        assets: Res<SpritesheetAssets>,
     ) {
-        for _e in ev_spawn.iter() {
+        for _e in ev_spawn.read() {
             match _e.0 {
                 DebugCommands::SpawnPlayer => {
 
-                    let texture_handle: Handle<Image> = server.load("main_character_ss.png");
-
-                    let texture_atlas = TextureAtlas::from_grid(
-                        texture_handle, Vec2::new(24.0, 24.0),
-                        12, 4, None, None
-                    );
-                    let idc = AnimationIdc{ first: 1, last: 12};
-                    let handle = atlases.add(texture_atlas);
+                    let idc = AnimationIdc{
+                        first: ANIMATION_INDICES.south[0],
+                        last: ANIMATION_INDICES.south[1]
+                    };
+                    let mut sprite = TextureAtlasSprite::new(idc.first);
+                    sprite.custom_size = Some(Vec2::new(24., 24.));
                     commands.spawn(
                         (SpriteSheetBundle {
-                            texture_atlas: handle,
-                            sprite: TextureAtlasSprite::new(0),
+                            // texture_atlas: assets.main_char.clone(),
+                            texture_atlas: assets.sokoban.clone(),
+                            sprite,
                             transform: Transform::from_scale(Vec3::splat(6.0)),
                             ..default()
                         },
                         idc,
-                        AnimationTimer(Timer::from_seconds(0.1, TimerMode::Repeating)),
+                        AnimationTimer(Timer::from_seconds(0.3, TimerMode::Repeating)),
                         PlayerPawn
                     )
                 );
@@ -388,12 +367,8 @@ mod game {
         speed_res: Res<PlayerSpeed>,
         time: Res<Time>,
     ) {
-        let mut player = match players.get_single_mut() {
-            Ok(plyr) => plyr,
-            _ => return
-        };
-        let dt = time.delta_seconds();
-        let speed = **speed_res * dt;
+        let Ok(mut player) = players.get_single_mut() else {return;};
+        let speed = **speed_res * time.delta_seconds();
         if movement.should_move {
             match movement.direction {
                 Direction::Down => player.translation.y -= speed,
@@ -409,13 +384,29 @@ mod game {
         // mut player_movement: ResMut<PlayerMovement>,
         mut player_facing_evr: EventReader<ChangePlayerFacing>,
     ) {
-        for evt in player_facing_evr.iter() {
+        for evt in player_facing_evr.read() {
             let Ok((mut idc, mut sprite)) = players.get_single_mut() else {return;};
             match **evt {
-                Direction::Down => {idc.first = 0; idc.last = 11; sprite.index = idc.first},
-                Direction::Up => {idc.first = 12; idc.last = 23; sprite.index = idc.first},
-                Direction::Right => {idc.first = 24; idc.last = 35; sprite.index = idc.first},
-                Direction::Left => {idc.first = 36; idc.last = 47; sprite.index = idc.first},
+                Direction::Down => {
+                    idc.first = ANIMATION_INDICES.south[0];
+                    idc.last = ANIMATION_INDICES.south[1];
+                    sprite.index = idc.first
+                },
+                Direction::Up => {
+                    idc.first = ANIMATION_INDICES.north[0];
+                    idc.last = ANIMATION_INDICES.north[1];
+                    sprite.index = idc.first
+                },
+                Direction::Right => {
+                    idc.first = ANIMATION_INDICES.west[0];
+                    idc.last = ANIMATION_INDICES.west[1];
+                    sprite.index = idc.first
+                },
+                Direction::Left => {
+                    idc.first = ANIMATION_INDICES.east[0];
+                    idc.last = ANIMATION_INDICES.east[1];
+                    sprite.index = idc.first
+                },
             }
         }
     }
