@@ -1,4 +1,5 @@
 use bevy::prelude::*;
+use bevy::sprite::collide_aabb::{collide, Collision};
 
 
 fn main() {
@@ -238,7 +239,10 @@ mod game {
     struct AnimationTimer(Timer);
 
     #[derive(Resource, Deref)]
-    struct Runspeed(u8);
+    struct RunSpeed(u8);
+
+    #[derive(Resource, Deref)]
+    struct PushSpeed(u8);
 
     #[derive(Component)]
     struct PlayerPawn;
@@ -260,7 +264,48 @@ mod game {
     }
 
     #[derive(Resource, Deref)]
-    struct PlayerSpeed(f32);
+    struct PlayerSpeed(u16);
+
+    #[derive(Component)]
+    struct Crate;
+
+    fn collide_crates(
+        mut crates: Query<&mut Transform, With<Crate>>,
+        mut player: Query<&mut Transform, (With<PlayerPawn>, Without<Crate>)>,
+        dt: Res<Time>,
+        push_speed: Res<PushSpeed>,
+        mut player_movement: ResMut<PlayerMovement>,
+    ) {
+        for mut crate_tf in crates.iter_mut() {
+            let Ok(player) = player.get_single_mut() else {return;};
+            let player_size = Vec2::splat(128.);
+            let crate_size = Vec2::splat(128.);
+            // println!("{}, {}", player_size, crate_size);
+            let Some(c) = collide(player.translation, player_size, crate_tf.translation, crate_size) else {
+                continue;
+            };
+            let speed = (push_speed.0) as f32 * dt.delta_seconds();
+            match c {
+                Collision::Left => {
+                    crate_tf.translation.x += speed;
+                    player_movement.should_move = false;
+                },
+                Collision::Right => {
+                    crate_tf.translation.x -= speed;
+                    player_movement.should_move = false;
+                },
+                Collision::Top => {
+                    crate_tf.translation.y -= speed;
+                    player_movement.should_move = false;
+                },
+                Collision::Bottom => {
+                    crate_tf.translation.y += speed;
+                    player_movement.should_move = false;
+                },
+                Collision::Inside => { },
+            }
+        }
+    }
 
     fn animate_sprite(
         mut animatable_sprites: Query<
@@ -268,11 +313,12 @@ mod game {
             &mut AnimationTimer,
             &mut TextureAtlasSprite)
         >,
+        player_movement: ResMut<PlayerMovement>,
         time: Res<Time>
     ) {
         for (idc, mut timer,  mut sprite) in &mut animatable_sprites {
             timer.tick(time.delta());
-            if timer.just_finished() {
+            if timer.just_finished() && player_movement.should_move {
                 sprite.index = if sprite.index >= idc.last {
                     idc.first
                 } else {
@@ -286,6 +332,8 @@ mod game {
         mut commands: Commands,
         mut ev_spawn: EventReader<DebugCmdEvent>,
         assets: Res<SpritesheetAssets>,
+        mut meshes: ResMut<Assets<Mesh>>,
+        mut materials: ResMut<Assets<ColorMaterial>>,
     ) {
         for _e in ev_spawn.read() {
             match _e.0 {
@@ -310,6 +358,19 @@ mod game {
                         PlayerPawn
                     )
                 );
+            DebugCommands::SpawnCrate => {
+
+                commands.spawn(
+                    (
+                        MaterialMesh2dBundle {
+                            mesh: meshes.add(shape::Quad::new(Vec2::splat(124.)).into()).into(),
+                            material: materials.add(ColorMaterial::from(Color::LIME_GREEN)),
+                            transform: Transform::from_translation(Vec3::new(200., 0., 0.)),
+                            ..default()
+                        },
+                        Crate
+                    )
+                );
             }
             }
         }
@@ -328,6 +389,9 @@ mod game {
         }
         if inputs.just_pressed(KeyCode::Key0) {
             spawn_player_event.send(DebugCmdEvent(DebugCommands::SpawnPlayer))
+        }
+        if inputs.just_pressed(KeyCode::P) {
+            spawn_player_event.send(DebugCmdEvent(DebugCommands::SpawnCrate))
         }
 
         if inputs.just_pressed(KeyCode::W) {
@@ -368,7 +432,7 @@ mod game {
         time: Res<Time>,
     ) {
         let Ok(mut player) = players.get_single_mut() else {return;};
-        let speed = **speed_res * time.delta_seconds();
+        let speed = **speed_res as f32 * time.delta_seconds();
         if movement.should_move {
             match movement.direction {
                 Direction::Down => player.translation.y -= speed,
