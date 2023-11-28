@@ -183,22 +183,31 @@ mod game {
     use crate::manager::SpritesheetAssets;
 
     use super::manager::GameState;
-    use bevy::prelude::*;
+    use bevy::{prelude::*, sprite::{MaterialMesh2dBundle, collide_aabb::{collide, Collision}}};
     pub struct Game;
     impl Plugin for Game {
         fn build(&self, app: &mut App) {
             app.add_systems(
                 Update,
-                 (listen_for_input.run_if(in_state(GameState::Game)),
-                debug_cmds.run_if(in_state(GameState::Game)),
+                 (
+                debug_cmds,
+                listen_for_input,
                 animate_sprite,
-                update_player_movement,
                 update_player_sprite_facing,
-            ))
+            ).run_if(in_state(GameState::Game))
+            )
+            .add_systems(
+                FixedUpdate,
+                (
+                    collide_crates,
+                    update_player_movement,
+                ).chain().run_if(in_state(GameState::Game))
+            )
             .add_event::<DebugCmdEvent>()
             .add_event::<ChangePlayerFacing>()
             .insert_resource(PlayerMovement::default())
-            .insert_resource(PlayerSpeed(300.0))
+            .insert_resource(PlayerSpeed(300))
+            .insert_resource(PushSpeed(50))
             ;
         }
     }
@@ -221,6 +230,7 @@ mod game {
     enum DebugCommands {
         #[default]
         SpawnPlayer,
+        SpawnCrate,
     }
 
     #[derive(Event, Default, Deref, DerefMut)]
@@ -358,6 +368,7 @@ mod game {
                         PlayerPawn
                     )
                 );
+            },
             DebugCommands::SpawnCrate => {
 
                 commands.spawn(
