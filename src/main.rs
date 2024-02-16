@@ -1,19 +1,38 @@
 use bevy::prelude::*;
-use bevy::sprite::collide_aabb::{collide, Collision};
 
+const SCREEN_WIDTH: f32 = 1280.;
+const SCREEN_HEIGHT: f32 = 896.;
 
 fn main() {
+    let plugins = DefaultPlugins;
+    plugins.set(
+        ImagePlugin::default_nearest()
+    ).set(
+        WindowPlugin {
+            primary_window: Some(
+                Window {
+                    resolution: (SCREEN_WIDTH, SCREEN_HEIGHT).into(),
+                    ..default()
+                }
+            ),
+            ..default()
+        }
+    );
     App::new()
         .add_plugins(DefaultPlugins.set(
             ImagePlugin::default_nearest(),
         ))
         .add_plugins((menu::Menu, game::Game, manager::Mgr))
         .add_systems(Startup, setup)
+        .insert_resource(Msaa::Off)
         .run();
 }
 
 fn setup(mut commands: Commands) {
-    commands.spawn(Camera2dBundle::default());
+    let mut camera = Camera2dBundle::default();
+    camera.transform.translation.x = SCREEN_WIDTH/2.;
+    camera.transform.translation.y = SCREEN_HEIGHT/2.;
+    commands.spawn(camera);
 }
 fn despawn_recursive<T: Component>(to_despawn: Query<Entity, With<T>>, mut commands: Commands) {
     to_despawn.for_each(
@@ -27,9 +46,6 @@ mod manager {
 
     pub struct Mgr;
 
-    #[derive(Component)]
-    pub struct Manager;
-
     #[derive(AssetCollection, Resource)]
     pub struct SpritesheetAssets {
         #[asset(texture_atlas(tile_size_x = 24., tile_size_y = 24., columns = 12, rows = 4))]
@@ -38,6 +54,8 @@ mod manager {
         #[asset(texture_atlas(tile_size_x = 128., tile_size_y = 128., columns = 13, rows = 8))]
         #[asset(path = "sokoban.png")]
         pub sokoban: Handle<TextureAtlas>,
+        #[asset(path = "star.png")]
+        pub star: Handle<Image>,
     }
 
     impl Plugin for Mgr {
@@ -184,18 +202,21 @@ mod game {
 
     use super::manager::GameState;
     use bevy::{prelude::*, sprite::{MaterialMesh2dBundle, collide_aabb::{collide, Collision}}};
+    use bevy_ecs_ldtk::prelude::*;
+
     pub struct Game;
     impl Plugin for Game {
         fn build(&self, app: &mut App) {
             app.add_systems(
                 Update,
                  (
-                debug_cmds,
-                listen_for_input,
-                animate_sprite,
-                update_player_sprite_facing,
-            ).run_if(in_state(GameState::Game))
+                    debug_cmds,
+                    listen_for_input,
+                    animate_sprite,
+                    update_player_sprite_facing,
+                ).run_if(in_state(GameState::Game))
             )
+            .add_systems(Startup, setup)
             .add_systems(
                 FixedUpdate,
                 (
@@ -203,14 +224,45 @@ mod game {
                     update_player_movement,
                 ).chain().run_if(in_state(GameState::Game))
             )
+            .add_plugins(LdtkPlugin)
             .add_event::<DebugCmdEvent>()
             .add_event::<ChangePlayerFacing>()
             .insert_resource(PlayerMovement::default())
-            .insert_resource(PlayerSpeed(300))
-            .insert_resource(PushSpeed(50))
+            .insert_resource(PlayerSpeed(450))
+            .insert_resource(PushSpeed(250))
+            .register_ldtk_entity::<LdtkBox>("Box")
+            .insert_resource(LevelSelection::Index(0))
             ;
         }
     }
+
+    fn setup(mut commands: Commands, asset_server: Res<AssetServer>) {
+        let levels = asset_server.load("levels/first_try.ldtk");
+        commands.spawn(LdtkWorldBundle {
+            ldtk_handle: levels,
+            // transform: Transform::from_xyz(-1280./2., -720./2., 0.).into(),
+            ..Default::default()
+        });
+    }
+
+    #[derive(Default, Bundle, LdtkEntity)]
+    struct LdtkBox {
+        a: Box,
+        #[sprite_sheet_bundle]
+        sprite_bundle: SpriteSheetBundle,
+        #[grid_coords]
+        grid_coods: GridCoords,
+    }
+
+    #[derive(Event)]
+    struct PushBoxEvent {
+        which_box: Entity,
+        direction: Direction,
+    }
+
+    // I think this one is useful too??
+    #[derive(Resource)]
+    struct BoxesBeingPushed(Vec<Entity>);
 
     struct AnimationIndices {
         north: [usize; 2],
@@ -230,6 +282,7 @@ mod game {
     enum DebugCommands {
         #[default]
         SpawnPlayer,
+        SpawnStar,
         SpawnCrate,
     }
 
@@ -276,40 +329,45 @@ mod game {
     #[derive(Resource, Deref)]
     struct PlayerSpeed(u16);
 
+    #[derive(Component, Default)]
+    struct Box;
+
     #[derive(Component)]
-    struct Crate;
+    struct Wall;
+
+    #[derive(Component)]
+    struct Blocker;
 
     fn collide_crates(
-        mut crates: Query<&mut Transform, With<Crate>>,
-        mut player: Query<&mut Transform, (With<PlayerPawn>, Without<Crate>)>,
+        mut crates: Query<&mut Transform, With<Box>>,
+        mut player: Query<&mut Transform, (With<PlayerPawn>, Without<Box>)>,
         dt: Res<Time>,
         push_speed: Res<PushSpeed>,
         mut player_movement: ResMut<PlayerMovement>,
     ) {
-        for mut crate_tf in crates.iter_mut() {
+        for mut box_tf in crates.iter_mut() {
             let Ok(player) = player.get_single_mut() else {return;};
             let player_size = Vec2::splat(128.);
-            let crate_size = Vec2::splat(128.);
-            // println!("{}, {}", player_size, crate_size);
-            let Some(c) = collide(player.translation, player_size, crate_tf.translation, crate_size) else {
+            let box_size = Vec2::splat(128.);
+            let Some(c) = collide(player.translation, player_size, box_tf.translation, box_size) else {
                 continue;
             };
             let speed = (push_speed.0) as f32 * dt.delta_seconds();
             match c {
                 Collision::Left => {
-                    crate_tf.translation.x += speed;
+                    box_tf.translation.x += speed;
                     player_movement.should_move = false;
                 },
                 Collision::Right => {
-                    crate_tf.translation.x -= speed;
+                    box_tf.translation.x -= speed;
                     player_movement.should_move = false;
                 },
                 Collision::Top => {
-                    crate_tf.translation.y -= speed;
+                    box_tf.translation.y -= speed;
                     player_movement.should_move = false;
                 },
                 Collision::Bottom => {
-                    crate_tf.translation.y += speed;
+                    box_tf.translation.y += speed;
                     player_movement.should_move = false;
                 },
                 Collision::Inside => { },
@@ -345,7 +403,7 @@ mod game {
         mut meshes: ResMut<Assets<Mesh>>,
         mut materials: ResMut<Assets<ColorMaterial>>,
     ) {
-        for _e in ev_spawn.read() {
+        for _e in ev_spawn.iter() {
             match _e.0 {
                 DebugCommands::SpawnPlayer => {
 
@@ -355,18 +413,34 @@ mod game {
                     };
                     let mut sprite = TextureAtlasSprite::new(idc.first);
                     sprite.custom_size = Some(Vec2::new(24., 24.));
+                    let transform = {
+                        let mut tf = Transform::from_scale(Vec3::splat(6.0));
+                        tf.translation.z = 10.0;
+                        tf
+                    };
+                    info!("Spawning player at {:?}", transform);
                     commands.spawn(
                         (SpriteSheetBundle {
                             // texture_atlas: assets.main_char.clone(),
                             texture_atlas: assets.sokoban.clone(),
                             sprite,
-                            transform: Transform::from_scale(Vec3::splat(6.0)),
+                            transform,
                             ..default()
                         },
                         idc,
                         AnimationTimer(Timer::from_seconds(0.3, TimerMode::Repeating)),
                         PlayerPawn
                     )
+                );
+            },
+            DebugCommands::SpawnStar => {
+
+                commands.spawn(
+                    SpriteBundle {
+                        texture: assets.star.clone(),
+                        transform: Transform::from_scale(Vec3::splat(0.1)),
+                        ..default()
+                    }
                 );
             },
             DebugCommands::SpawnCrate => {
@@ -379,7 +453,7 @@ mod game {
                             transform: Transform::from_translation(Vec3::new(200., 0., 0.)),
                             ..default()
                         },
-                        Crate
+                        Box
                     )
                 );
             }
@@ -400,6 +474,9 @@ mod game {
         }
         if inputs.just_pressed(KeyCode::Key0) {
             spawn_player_event.send(DebugCmdEvent(DebugCommands::SpawnPlayer))
+        }
+        if inputs.just_pressed(KeyCode::O) {
+            spawn_player_event.send(DebugCmdEvent(DebugCommands::SpawnStar))
         }
         if inputs.just_pressed(KeyCode::P) {
             spawn_player_event.send(DebugCmdEvent(DebugCommands::SpawnCrate))
@@ -459,7 +536,7 @@ mod game {
         // mut player_movement: ResMut<PlayerMovement>,
         mut player_facing_evr: EventReader<ChangePlayerFacing>,
     ) {
-        for evt in player_facing_evr.read() {
+        for evt in player_facing_evr.iter() {
             let Ok((mut idc, mut sprite)) = players.get_single_mut() else {return;};
             match **evt {
                 Direction::Down => {
